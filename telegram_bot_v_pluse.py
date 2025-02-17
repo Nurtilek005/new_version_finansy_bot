@@ -2000,7 +2000,6 @@ async def handle_receipt_document(update: Update, context: ContextTypes.DEFAULT_
     Обрабатывает документ (PDF, TXT и т. д.) и отправляет его в группу с ID чека.
     """
     try:
-        # Проверяем, что в сообщении есть документ
         if not update.message.document:
             await update.message.reply_text(
                 "⚠️ Ошибка: в сообщении нет документа. Отправьте файл чека или нажмите 'Пропустить'.",
@@ -2012,7 +2011,7 @@ async def handle_receipt_document(update: Update, context: ContextTypes.DEFAULT_
         document = update.message.document
         file_id = document.file_id  # ID файла
         file_name = document.file_name  # Название файла
-        check_id = generate_check_id()  # Генерируем ID чека
+        check_id = generate_check_id()  # Генерируем уникальный ID чека
 
         # ✅ Отправляем документ в группу
         await context.bot.send_document(
@@ -2022,32 +2021,26 @@ async def handle_receipt_document(update: Update, context: ContextTypes.DEFAULT_
             parse_mode="Markdown"
         )
 
-        # Сохраняем ID чека в контексте пользователя
+        # ✅ Сохраняем ID чека в контексте пользователя
         context.user_data["receipt_id"] = check_id
 
-        # ✅ Показываем пользователю, что чек загружен
-        await update.message.reply_text(
-            "✅ Электронный чек загружен! Завершаем операцию...",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💰 Показать остаток", callback_data="check_wallet_balance")],
-                [InlineKeyboardButton("🔄 Новая операция", callback_data="start")]
-            ])
-        )
+        # ✅ Проверяем, есть ли сумма в контексте перед сохранением
+        if "amount" not in context.user_data or context.user_data["amount"] is None:
+            await update.message.reply_text("❌ Ошибка: сумма не сохранена. Попробуйте снова.")
+            return
 
-        # **Вызываем сохранение операции**
+        # ✅ Вызываем сохранение операции с правильными аргументами
         await save_operation_and_return_to_start(update, context)
 
     except Exception as e:
         logging.error(f"❌ Ошибка в handle_receipt_document: {e}")
         await update.message.reply_text("⚠️ Ошибка при обработке документа. Попробуйте снова.")
 
-
 async def handle_receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает фото чека, отправляет его в группу и записывает в таблицу, затем начинает новую операцию.
     """
     try:
-        # Проверяем, есть ли фото в сообщении
         if not update.message.photo:
             await update.message.reply_text("Ошибка: в сообщении отсутствует фото. Пожалуйста, отправьте фото чека.")
             return
@@ -2063,23 +2056,20 @@ async def handle_receipt_photo(update: Update, context: ContextTypes.DEFAULT_TYP
             caption=f"Чек с ID: {check_id}"
         )
 
-        # Сохраняем ID чека в контекст
+        # ✅ Сохраняем ID чека в контекст
         context.user_data["receipt_id"] = check_id
 
-        # Сохраняем операцию в таблицу
-        await save_operation(context)
+        # ✅ Проверяем, есть ли сумма перед сохранением
+        if "amount" not in context.user_data or context.user_data["amount"] is None:
+            await update.message.reply_text("❌ Ошибка: сумма не сохранена. Попробуйте снова.")
+            return
 
-        # Сообщаем пользователю об успешном завершении
-        await update.message.reply_text("Данные успешно сохранены. Начинаю новую операцию.")
+        # **Вызываем сохранение операции с правильными аргументами**
+        await save_operation_and_return_to_start(update, context)
 
-        # Очищаем контекст после завершения операции
-        context.user_data.clear()
-
-        # Возвращаем пользователя к стартовому меню
-        await start(update, context)
     except Exception as e:
         logging.error(f"Ошибка в handle_receipt_photo: {e}")
-        await update.message.reply_text("Произошла ошибка при обработке фото. Пожалуйста, попробуйте снова.")
+        await update.message.reply_text(f"Произошла ошибка при обработке фото: {e}. Пожалуйста, попробуйте снова.")
 
 async def back_to_wallet_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -3079,61 +3069,57 @@ async def save_operation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def save_operation_and_return_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # 📌 Сохраняемые данные
         wallet_name = context.user_data.get("selected_wallet", "Не указано")
         operation_type = context.user_data.get("operation_type", "Не указано")
         category_name = context.user_data.get("selected_category", "Не указано")
         subcategory_name = context.user_data.get("selected_subcategory", "Не указано")
         currency = context.user_data.get("currency", "Не указано")
-        amount = context.user_data.get("amount", 0)
+        amount = context.user_data.get("amount")
         comment = context.user_data.get("comment", "Пропущено")
+        receipt_id = context.user_data.get("receipt_id", "Пропущено")  # ✅ Сохраняем ID чека
         date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 🛑 Логируем все данные перед сохранением
-        logging.info(f"📊 Данные для сохранения: {operation_type}, {wallet_name}, {category_name}, {subcategory_name}, {currency}, {amount}, {comment}")
+        logging.info(f"📊 Сохраняем операцию: {operation_type}, {wallet_name}, {currency}, {amount}, чек ID: {receipt_id}")
 
-        # ✅ Проверяем, если сумма не число – игнорируем операцию
-        if not isinstance(amount, (int, float)) or amount <= 0:
+        if amount is None or not isinstance(amount, (int, float)) or amount <= 0:
             await update.message.reply_text("❌ Ошибка: сумма операции должна быть положительным числом.")
             return
 
-        # ✅ Обновляем баланс кошелька в JSON
+        # 🔥 Загружаем и обновляем баланс
         data = load_data()
         wallet = data["wallets"].get(wallet_name, {})
 
-        if "currency_balances" not in wallet:
-            wallet["currency_balances"] = {}
+        if "currencies" not in wallet:
+            wallet["currencies"] = {}
 
-        if currency not in wallet["currency_balances"]:
-            wallet["currency_balances"][currency] = 0
+        if currency not in wallet["currencies"]:
+            wallet["currencies"][currency] = 0
 
-        current_balance = wallet["currency_balances"][currency]
+        current_balance = wallet["currencies"][currency]
 
-        # 🔥 Обновляем баланс в зависимости от операции (доход / расход)
         if operation_type == "expense":
             new_balance = current_balance - amount
-        else:  # income
+        else:
             new_balance = current_balance + amount
 
-        wallet["currency_balances"][currency] = new_balance
+        wallet["currencies"][currency] = new_balance
         data["wallets"][wallet_name] = wallet
-        save_data(data)  # ✅ Сохраняем изменения в JSON
+        save_data(data)
 
-        logging.info(f"✅ Баланс {currency} в кошельке '{wallet_name}' обновлен: {new_balance}")
+        logging.info(f"✅ Баланс {currency} обновлен: {new_balance}")
 
         # ✅ Записываем в Google Sheets
         operations_sheet = gc.open_by_key(SPREADSHEET_ID).worksheet("Операции")
-        check_id = context.user_data.get("receipt_id", "Пропущено")
         operations_sheet.append_row([
-            date, operation_type, wallet_name, category_name, subcategory_name, currency, amount, comment, check_id
+            date, operation_type, wallet_name, category_name, subcategory_name, currency, amount, comment, receipt_id
         ])
 
-        logging.info("✅ Данные успешно записаны в Google Таблицу!")
+        logging.info(f"✅ Операция сохранена в Google Sheets с ID чека: {receipt_id}")
 
-        # ✅ Обновляем баланс в Telegram сразу после транзакции
+        # ✅ Обновляем баланс в Telegram
         await dispaly_wallet_balance(update, context)
 
-        # 🔄 Очищаем контекст
+        # 🔄 Очищаем контекст после сохранения
         context.user_data.clear()
 
     except Exception as e:
